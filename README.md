@@ -1,5 +1,7 @@
 # Kerbal Space Program Automation
 
+[![Build Status](https://travis-ci.org/prikhi/ksp-automation.svg?branch=master)](https://travis-ci.org/prikhi/ksp-automation)
+
 A CLI KSP Automation program & library that utilizes the [kRPC][krpc] mod.
 
 Currently in early alpha - the only current supported program is achieving
