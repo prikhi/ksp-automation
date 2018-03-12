@@ -1,0 +1,68 @@
+name:                ksp-automation
+version:             0.1.0.0
+github:              "prikhi/ksp-automation"
+license:             GPL-3.0
+author:              "Pavan Rikhi"
+maintainer:          "pavan.rikhi@gmail.com"
+copyright:           "GPL-3.0"
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+# Metadata used when publishing your package
+synopsis:            A Kerbal Space Program Automation Program & Library
+category:            Application
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on Github at <https://github.com/prikhi/ksp-automation#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+- krpc-hs
+- text
+
+
+library:
+  source-dirs: src
+
+executables:
+  ksp-automation:
+    main:                Main.hs
+    source-dirs:         app
+    other-modules: []
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - ksp-automation
+    - async
+    - brick
+    - text
+    - time
+    - vector
+    - vty
+  ksp-automation-simple:
+    main:                Simple.hs
+    source-dirs:         app
+    other-modules: []
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - ksp-automation
+
+tests:
+  ksp-automation-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - ksp-automation
