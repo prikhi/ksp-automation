@@ -1,3 +1,3 @@
 [submodule "krpc"]
 	path = krpc
-	url = git@github.com:cahu/krpc-hs
+	url = https://github.com/Cahu/krpc-hs.git
