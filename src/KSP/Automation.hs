@@ -64,9 +64,7 @@ data LiftOffData
 -- TODO: Eventually attempt to match inclination w/ a target?
 lowKerbinOrbit :: LoggingFunction -> StreamClient -> RPCContext ()
 lowKerbinOrbit logMessage streamClient = do
-    logMessage "Low Kerbin Orbit Program Initiated."
-    logMessage "Initializing Vessel Data."
-    v <- getActiveVessel
+    v <- initializeVesselData logMessage
     ctrl <- getVesselControl v
     liftOff logMessage streamClient v
     setControlSAS ctrl True >> setControlSASMode ctrl SASMode'Prograde
@@ -258,6 +256,11 @@ circularizeOrbit logMessage streamClient v = do
 
 
 -- UTILTIES
+
+-- | Log a Messge & Grab the Active Vessel Data.
+initializeVesselData :: LoggingFunction -> RPCContext Vessel
+initializeVesselData logMessage =
+    logMessage "Initializing Vessel Data." >> getActiveVessel
 
 -- | Calculate a `Vessel`'s weight at a specific altitude of the
 -- `CelestialBody` the vessel is orbiting.
