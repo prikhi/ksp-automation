@@ -418,12 +418,24 @@ runMission logMVar m =
             case m of
                 LowKerbinOrbit ->
                     lowKerbinOrbit
+                ExecuteManeuver ->
+                    executeManeuverProgram
                 _ ->
-                    fail "UNIMPLEMENTED MISSION"
+                    fail "runMission: UNIMPLEMENTED MISSION"
+
+        missionTitle = case m of
+            LowKerbinOrbit ->
+                "Low Kerbin Orbit"
+            ExecuteManeuver ->
+                "Maneuver Execution"
+            _ ->
+                fail "runMission: UNIMPLEMENTED MISSION"
         run =
             withRPCClient (show m) "127.0.0.1" "50000" $ \client ->
             withStreamClient client "127.0.0.1" "50001" $ \streamClient ->
-                runRPCProg client (prog logger streamClient)
+                runRPCProg client $ do
+                    logger . T.pack $ missionTitle ++ " Program Initiated."
+                    prog logger streamClient
     in
         catch run $ \(e :: SomeException) ->
             messageLogger . T.pack $ "Mission Program Exception!\n" ++ show e

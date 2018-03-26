@@ -49,7 +49,84 @@ data LiftOffData
         , lodThrust :: Float    -- ^ Vessel's Current Thrust
         }
 
--- | An automted routine for taking off & attempting to achieve
+-- | A Program for executing a maneuver node. A basic wrapper around the
+-- `executeManeuver` sub-routine.
+executeManeuverProgram :: LoggingFunction -> StreamClient -> RPCContext ()
+executeManeuverProgram logMessage streamClient = do
+    v <- initializeVesselData logMessage
+    ctrl <- getVesselControl v
+    listToMaybe <$> getControlNodes ctrl >>= \case
+        Nothing ->
+            logMessage "Could Not Find A Maneuver Node - Aborting."
+        Just node -> do
+            executeManeuver logMessage streamClient v node
+            enableStabilityAssist ctrl
+
+
+-- | A sub-routine for executing a manuever node.
+--
+-- TODO: PID Controller for throttle control
+executeManeuver :: LoggingFunction -> StreamClient -> Vessel -> Node -> RPCContext ()
+executeManeuver logMessage streamClient v node = do
+    pilot <- getVesselAutoPilot v
+    ctrl <- getVesselControl v
+
+    logMessage "Calculating Burn Time for Maneuver."
+    -- TODO: Eventually, should account for having to decouple during a burn
+    deltaV <- getNodeDeltaV node
+    maxThrust <- realToFrac <$> getVesselAvailableThrust v
+    isp <- (* 9.82) . realToFrac <$> getVesselSpecificImpulse v
+    m0 <- realToFrac <$> getVesselMass v
+    let m1 = m0 / exp (deltaV / isp)
+        flowRate = maxThrust / isp
+        burnTime = (m0 - m1) / flowRate
+    logMessage . T.pack $ "Calculated Burn Time of " ++ show (round burnTime :: Integer) ++ "s"
+
+    logMessage "Warping to Approximate Burn Time."
+    nodeUT <- getNodeUT node
+    warpTo (nodeUT - (burnTime / 2)) 100000 2
+    logMessage "Warp Completed."
+
+    logMessage "Orienting Vessel Towards Burn Direction."
+    nodeFrame <- getNodeReferenceFrame node
+    autoPilotEngage pilot
+    setAutoPilotReferenceFrame pilot nodeFrame
+    setAutoPilotTargetDirection pilot (0, 1, 0)
+    logMessage "Vessel Re-Orientation Complete."
+
+    logMessage "Waiting for Burn Point."
+    utStream <- getUTStream
+    loop $ do
+        msg <- getStreamMessage streamClient
+        if messageHasResultFor utStream msg then do
+            ut <- getStreamResult utStream msg
+            return $ ut >= (nodeUT - (burnTime / 2))
+        else
+            return False
+
+    logMessage "Beginning Maneuver Burn."
+    burnVectorStream <- nodeRemainingBurnVectorStream node nodeFrame
+    burnVectorRef <- liftIO $ newIORef (0, 9001, 0)
+    loop $ do
+        msg <- getStreamMessage streamClient
+        when (messageHasResultFor burnVectorStream msg) $
+            getStreamResult burnVectorStream msg
+            >>= void . liftIO . modifyIORef burnVectorRef . const
+        burnVector <- liftIO (readIORef burnVectorRef)
+        setAutoPilotTargetDirection pilot burnVector
+        let remainingBurn = mag burnVector
+        -- TODO: PID Controller!
+        when (remainingBurn >= 20) $ setControlThrottle ctrl 1
+        when (remainingBurn < 20 && remainingBurn >= 5) $ setControlThrottle ctrl 0.5
+        when (remainingBurn < 5) $ setControlThrottle ctrl 0.25
+        return $ remainingBurn < 0.1
+    setControlThrottle ctrl 0
+    logMessage "Maneuver Completed."
+    autoPilotDisengage pilot
+
+
+
+-- | An automated routine for taking off & attempting to achieve
 -- a circular Low Kerbin Orbit(75,000m).
 --
 -- This is incomplete and has only been tested on a handful of rocket.
@@ -173,8 +250,8 @@ liftOff logMessage streamClient v = do
 -- | Circularize the current orbit at it's apoapsis.
 circularizeOrbit :: LoggingFunction -> StreamClient -> Vessel -> RPCContext ()
 circularizeOrbit logMessage streamClient v = do
-    pilot <- getVesselAutoPilot v
     ctrl <- getVesselControl v
+
     -- Calculate DeltaV Required for Circularization, Add Manuever Node
     logMessage "Calculating DeltaV & Burn Time for Circularization."
     (mu, r, a1) <- getVesselOrbit v >>= \orbit ->
@@ -191,68 +268,10 @@ circularizeOrbit logMessage streamClient v = do
     node <- controlAddNode ctrl (nodeUT + timeToApoapsis_) deltaV 0 0
     logMessage "Added Circularization Manuever Node."
 
+    executeManeuver logMessage streamClient v node
 
-    -- Calculate Required Burn Time
-    -- TODO: Eventually, should account for having to decouple during a burn
-    maxThrust <- getVesselAvailableThrust v
-    isp <- (* 9.82) <$> getVesselSpecificImpulse v -- TODO: Use current val based on height
-    m0 <- getVesselMass v
-    let m1 = m0 / exp (deltaV / isp)
-        flowRate = maxThrust / isp
-        burnTime = (m0 - m1) / flowRate
-    logMessage . T.pack $ "Calculated Burn Time of " ++ show (round burnTime :: Integer) ++ "s"
-
-
-    logMessage "Warping to Approximate Burn Time."
-    burnUT <-
-        (\t tta -> t + tta - realToFrac burnTime / 2)
-        <$> getUT  <*> (getVesselOrbit v >>= getOrbitTimeToApoapsis)
-    warpTo (burnUT - 2) 4 10
-    logMessage "Warp Completed, Orienting Ship to Burn Direction."
-
-
-    -- Align to Burn Direction
-    nodeFrame <- getNodeReferenceFrame node
-    autoPilotEngage pilot
-    setAutoPilotReferenceFrame pilot nodeFrame
-    setAutoPilotTargetDirection pilot (0, 1, 0)
-    logMessage "Ship Oriented for Circularization Burn."
-
-
-    logMessage "Waiting for Burn Point."
-    timeToApoapsisStream <- getVesselOrbit v >>= getOrbitTimeToApoapsisStream
-    timeToApoapsisRef <- liftIO $ newIORef 9001
-    loop $ do
-        msg <- getStreamMessage streamClient
-        when (messageHasResultFor timeToApoapsisStream msg) $ do
-            timeToApoapsis <- getStreamResult timeToApoapsisStream msg
-            void . liftIO . modifyIORef timeToApoapsisRef $ const timeToApoapsis
-        (\tta -> tta - realToFrac burnTime / 2 > 0) <$> liftIO (readIORef timeToApoapsisRef)
-
-
-    -- Start Burn
-    logMessage "Beginning Circularization Burn."
-    setControlThrottle ctrl 1
-
-    burnVectorStream <- nodeRemainingBurnVectorStream node nodeFrame
-    burnVectorRef <- liftIO $ newIORef (0, 9001, 0)
-    loop $ do
-        msg <- getStreamMessage streamClient
-        when (messageHasResultFor burnVectorStream msg) $
-            getStreamResult burnVectorStream msg
-            >>= void . liftIO . modifyIORef burnVectorRef . const
-        burnVector <- liftIO (readIORef burnVectorRef)
-        setAutoPilotTargetDirection pilot burnVector
-        let (_, progradeVector, _) = burnVector
-        when (progradeVector >= 20) $ setControlThrottle ctrl 1
-        when (progradeVector < 20 && progradeVector >= 5) $ setControlThrottle ctrl 0.5
-        when (progradeVector < 5) $ setControlThrottle ctrl 0.25
-        return $ progradeVector < 0
-    setControlThrottle ctrl 0
-
-    logMessage "Burn Completed. Removing Manuever Node."
+    logMessage "Removing Circularization Maneuver Node."
     nodeRemove node
-    autoPilotDisengage pilot
 
 
 -- UTILTIES
