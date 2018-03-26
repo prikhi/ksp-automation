@@ -63,7 +63,7 @@ executeManeuverProgram logMessage streamClient = do
             enableStabilityAssist ctrl
 
 
--- | A sub-routine for executing a manuever node.
+-- | A sub-routine for executing a maneuver node.
 --
 -- TODO: PID Controller for throttle control
 executeManeuver :: LoggingFunction -> StreamClient -> Vessel -> Node -> RPCContext ()
@@ -136,7 +136,7 @@ executeManeuver logMessage streamClient v node = do
 --
 -- When the SRBs are depleted it will activate the LF stage and maintain
 -- a TWR of ~2.5 until the target apoapsis height is achieved. Then
--- a circularizing manuever node is planned and executed.
+-- a circularizing maneuver node is planned and executed.
 --
 -- TODO: Eventually attempt to match inclination w/ a target?
 lowKerbinOrbit :: LoggingFunction -> StreamClient -> RPCContext ()
@@ -166,17 +166,7 @@ liftOff logMessage streamClient v = do
     thrustStream <- getVesselThrustStream v
     apoapsisStream <- getVesselOrbit v >>= getOrbitApoapsisAltitudeStream
 
-    logMessage "Setting Launch Parameters."
-    setAutoPilotSAS pilot True
-    setAutoPilotSASMode pilot SASMode'StabilityAssist
-    autoPilotTargetPitchAndHeading pilot 90 90
-    setAutoPilotTargetRoll pilot 90
-    autoPilotEngage pilot
-    setControlThrottle ctrl 1
-
-    countdown logMessage 3
-    logMessage "Launch!"
-    void $ controlActivateNextStage ctrl
+    launch logMessage v (90, 90, 90)
 
     logMessage "Raising Apoapsis to 75km."
     loop $ do
@@ -253,7 +243,7 @@ circularizeOrbit :: LoggingFunction -> StreamClient -> Vessel -> RPCContext ()
 circularizeOrbit logMessage streamClient v = do
     ctrl <- getVesselControl v
 
-    -- Calculate DeltaV Required for Circularization, Add Manuever Node
+    -- Calculate DeltaV Required for Circularization, Add Maneuver Node
     logMessage "Calculating DeltaV & Burn Time for Circularization."
     (mu, r, a1) <- getVesselOrbit v >>= \orbit ->
         (,,)
@@ -267,7 +257,7 @@ circularizeOrbit logMessage streamClient v = do
     nodeUT <- getUT
     timeToApoapsis_ <- getVesselOrbit v >>= getOrbitTimeToApoapsis
     node <- controlAddNode ctrl (nodeUT + timeToApoapsis_) deltaV 0 0
-    logMessage "Added Circularization Manuever Node."
+    logMessage "Added Circularization Maneuver Node."
 
     executeManeuver logMessage streamClient v node
 
@@ -281,6 +271,25 @@ circularizeOrbit logMessage streamClient v = do
 initializeVesselData :: LoggingFunction -> RPCContext Vessel
 initializeVesselData logMessage =
     logMessage "Initializing Vessel Data." >> getActiveVessel
+
+-- | Launch the Vessel with the Given Pitch, Heading, & Roll.
+--
+-- Enables & configures the Autopilot, Maximizes the Throttle, & Activates
+-- the First Stage.
+launch :: LoggingFunction -> Vessel -> (Float, Float, Float) -> RPCContext ()
+launch logMessage v (pitch, heading, roll) = do
+    pilot <- getVesselAutoPilot v
+    ctrl <- getVesselControl v
+
+    logMessage "Setting Launch Parameters."
+    autoPilotTargetPitchAndHeading pilot pitch heading
+    setAutoPilotTargetRoll pilot roll
+    autoPilotEngage pilot
+    setControlThrottle ctrl 1
+
+    countdown logMessage 3
+    logMessage "Launch!"
+    void $ controlActivateNextStage ctrl
 
 -- | Calculate a `Vessel`'s weight at a specific altitude of the
 -- `CelestialBody` the vessel is orbiting.
