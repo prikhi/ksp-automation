@@ -22,11 +22,13 @@ TODO Tasks:
 module KSP.Automation where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM_, when, void)
+import Control.Monad (forM_, when, void, forever, unless)
 import Control.Monad.IO.Class (liftIO)
-import Data.IORef (newIORef, modifyIORef, readIORef)
+import Data.Default (Default(def))
+import Data.IORef (IORef, newIORef, modifyIORef, readIORef)
 import Data.Maybe (listToMaybe, fromMaybe)
 import Data.Monoid ((<>))
+import GHC.Conc (TVar, readTVarIO)
 
 import KRPCHS
 import KRPCHS.SpaceCenter
@@ -42,6 +44,82 @@ type LoggingFunction = (T.Text -> RPCContext ())
 logStdOut :: LoggingFunction
 logStdOut =
     liftIO . putStrLn . T.unpack
+
+
+newtype GlobalOptions
+    = GlobalOptions
+        { goEnableAutoStaging :: Bool
+        }
+
+instance Default GlobalOptions where
+    def = GlobalOptions
+        { goEnableAutoStaging = True
+        }
+
+-- Auto-Staging
+newtype AutoStagingData
+    = AutoStagingData
+        { asdLastEnabledValue :: Bool }
+
+autoStaging :: TVar GlobalOptions -> LoggingFunction -> RPCContext ()
+autoStaging optionsTVar logMessage = do
+    logMessage "Initializing Auto Staging Sub-Process."
+    dataRef <- liftIO
+        $ goEnableAutoStaging <$> readTVarIO optionsTVar >>= newIORef . AutoStagingData
+    forever $ do
+        isLaunched <- (/= VesselSituation'PreLaunch) <$> (getActiveVessel >>= getVesselSituation)
+        enabled <- logAndUpdateEnabledStatus dataRef
+
+        when (enabled && isLaunched) $ do
+            v <- getActiveVessel
+            ctrl <- getVesselControl v
+            currentStage <- getControlCurrentStage ctrl
+            stageDepleted <- stageResourcesDepleted v ctrl
+            when (stageDepleted && currentStage /= 0) . void
+                $ logMessage "Resources Empty, Decoupling Stage."
+                >> controlActivateNextStage ctrl
+        liftIO $ threadDelay 500000
+    where
+        logAndUpdateEnabledStatus :: IORef AutoStagingData -> RPCContext Bool
+        logAndUpdateEnabledStatus dataRef = do
+            enabled <- liftIO $ goEnableAutoStaging <$> readTVarIO optionsTVar
+            lastEnabledValue <- liftIO $ asdLastEnabledValue <$> readIORef dataRef
+            case (lastEnabledValue, enabled) of
+                (True, False) ->
+                    logMessage "Auto-Staging Disabled."
+                (False, True) ->
+                    logMessage "Auto-Staging Enabled."
+                _ ->
+                    return ()
+            liftIO $ modifyIORef dataRef $ \asd -> asd { asdLastEnabledValue = enabled }
+            return enabled
+        stageResourcesDepleted :: Vessel -> Control -> RPCContext Bool
+        stageResourcesDepleted v ctrl = do
+            currentStage <- getControlCurrentStage ctrl
+            resources <- vesselResourcesInDecoupleStage v currentStage False
+            maxSolidFuel <- resourcesMax resources "SolidFuel"
+            solidFuel <- resourcesAmount resources "SolidFuel"
+            maxLiquidFuel <- resourcesMax resources "LiquidFuel"
+            liquidFuel <- resourcesAmount resources "LiquidFuel"
+            let solidLiquidStageDepleted =
+                    solidFuel == 0 && maxSolidFuel > 0 && liquidFuel == 0 && maxLiquidFuel > 0
+                solidOnlyStageDepleted =
+                    solidFuel == 0 && maxSolidFuel > 0 && maxLiquidFuel == 0
+                liquidOnlyStageDepleted =
+                    liquidFuel == 0 && maxLiquidFuel > 0 && maxSolidFuel == 0
+                currentStageDepleted =
+                    solidLiquidStageDepleted || solidOnlyStageDepleted || liquidOnlyStageDepleted
+                nextStage =
+                    currentStage - 1
+
+            nextResources <- vesselResourcesInDecoupleStage v nextStage False
+            nextSolidFuel <- resourcesMax nextResources "SolidFuel"
+            nextLiquidFuel <- resourcesMax nextResources "LiquidFuel"
+            let nextStageHasFuel =
+                    nextLiquidFuel > 0 || nextSolidFuel > 0
+            return $ currentStageDepleted && nextStageHasFuel
+
+
 
 
 -- Sub-Orbital

@@ -11,9 +11,11 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Concurrent (threadDelay, forkIO, killThread)
 import Control.Concurrent.Async (Async, async, cancel)
 import Control.Concurrent.MVar (MVar, newMVar, modifyMVar, modifyMVar_)
+import Data.Default (Default(def))
 import Data.Maybe (listToMaybe)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
+import GHC.Conc (TVar, newTVarIO)
 import KRPCHS (withRPCClient, withStreamClient, runRPCProg)
 
 import KSP.Automation
@@ -76,7 +78,7 @@ data AppState =
         { asFocusedSection :: AppSection
         , asMissionLog :: L.List Name LogEntry
         , asMissionInProgress :: Bool
-        , asEnableAutoStaging :: Bool
+        , asGlobalOptions :: TVar GlobalOptions
         , asMissionList :: L.List Name Mission
         , asMissionThread :: Maybe (Async ())
         , asLogEntriesMVar :: MVar [LogEntry]
@@ -86,11 +88,12 @@ initialState :: IO AppState
 initialState = do
     loggerMVar <- newMVar []
     logEntry <- makeLogEntry "KSP Automation Initialized - Awaiting Mission Selection."
+    options <- newTVarIO def
     return AppState
         { asFocusedSection = MissionSelect
         , asMissionLog = L.list LogList (Vec.fromList [logEntry]) 1
         , asMissionInProgress = False
-        , asEnableAutoStaging = False
+        , asGlobalOptions = options
         , asMissionList = L.list MissionList (Vec.fromList [minBound .. maxBound]) 1
         , asMissionThread = Nothing
         , asLogEntriesMVar = loggerMVar
@@ -151,6 +154,7 @@ makeLogEntry msg = do
         { leDate = T.pack $ formatTime defaultTimeLocale "%T" currentTime
         , leMessage = msg
         }
+
 
 
 -- STYLES
@@ -384,7 +388,8 @@ handleEvents s = \case
                     maybeSelectedMission =
                         fmap snd . L.listSelectedElement $ asMissionList updatedState
                     runAsyncMission =
-                        liftIO . async . maybe (return ()) (runMission $ asLogEntriesMVar s)
+                        liftIO . async . maybe (return ())
+                            (runMission (asLogEntriesMVar s) (asGlobalOptions s))
                 in
                     if focusedSection == MissionSelect then
                         runAsyncMission maybeSelectedMission
@@ -411,8 +416,8 @@ handleEvents s = \case
         continue s
 
 
-runMission  :: MVar [LogEntry] -> Mission -> IO ()
-runMission logMVar m =
+runMission  :: MVar [LogEntry] -> TVar GlobalOptions -> Mission -> IO ()
+runMission logMVar optionsTVar m =
     let
         logger =
             liftIO . messageLogger
@@ -438,19 +443,36 @@ runMission logMVar m =
             _ ->
                 fail "runMission: UNIMPLEMENTED MISSION"
         run =
-            withRPCClient (show m) "127.0.0.1" "50000" $ \client ->
-            withStreamClient client "127.0.0.1" "50001" $ \streamClient ->
+            withAutoStaging logger $
+            withRPCClient (show m) rpcServer rpcPort $ \client ->
+            withStreamClient client rpcServer rpcStreamPort $ \streamClient ->
                 runRPCProg client $ do
                     logger . T.pack $ missionTitle ++ " Program Initiated."
                     prog logger streamClient
     in
-        catch run $ \(e :: SomeException) ->
-            messageLogger . T.pack $ "Mission Program Exception!\n" ++ show e
+        catch run errorHandler
     where
+        rpcServer =
+            "127.0.0.1"
+        rpcPort =
+            "50000"
+        rpcStreamPort =
+            "50001"
         messageLogger :: T.Text -> IO ()
         messageLogger msg = do
             newEntry <- makeLogEntry msg
             modifyMVar_ logMVar (return . (:) newEntry)
+        errorHandler :: SomeException -> IO ()
+        errorHandler e =
+            messageLogger . T.pack $ "Mission Program Exception!\n" ++ show e
+        withAutoStaging :: LoggingFunction -> IO () -> IO ()
+        withAutoStaging logger p =
+            bracket (forkIO $ runAutoStaging logger) killThread $ const p
+        runAutoStaging :: LoggingFunction -> IO ()
+        runAutoStaging logger =
+            withRPCClient "Auto-Staging" rpcServer rpcPort
+                $ flip runRPCProg
+                $ autoStaging optionsTVar logger
 
 
 nextEnum :: (Enum a, Bounded a, Eq a) => a -> a
