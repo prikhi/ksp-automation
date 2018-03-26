@@ -285,7 +285,8 @@ renderMissionList s =
                     $ show mission
 
 
--- TODO; Implement Form Fields
+-- TODO: Implement Form Fields
+-- https://github.com/jtdaugherty/brick/blob/master/docs/guide.rst#input-forms
 renderOptions :: AppState -> Widget Name
 renderOptions _ =
     padTopBottom 1 . padLeftRight 2 $ vBox

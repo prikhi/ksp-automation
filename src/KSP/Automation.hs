@@ -139,29 +139,24 @@ subOrbital logMessage streamClient = do
     surfaceReferenceFrame <- getVesselOrbit v
         >>= getOrbitBody
         >>= getCelestialBodyReferenceFrame
+    flight <- vesselFlight v surfaceReferenceFrame
 
     dataRef <- liftIO . newIORef $ SubOrbitalData 9001 M.empty
-    velocityStream <- vesselVelocityStream v surfaceReferenceFrame
+    velocityStream <- getFlightVerticalSpeedStream flight
 
-    launch logMessage v (90, 90, 80)
+    launch logMessage v (90, 90, 90)
 
-    -- TODO: Adjust Pitch During Thrust
-    logMessage "Waiting for Parachute Activation"
-    loop $ do
-        let update = liftIO . modifyIORef dataRef
-        msg <- getStreamMessage streamClient
-        when (messageHasResultFor velocityStream msg) $ do
-            (verticalV, _, _) <- getStreamResult velocityStream msg
-            update $ \c -> c { sodVerticalVelocity = verticalV }
+    withPitchTable streamClient launchpadPitchAngles v (isFalling velocityStream dataRef) $
         forM_ experiments $ \experiment -> do
             isAvailable <- getExperimentAvailable experiment
             hasData <- getExperimentHasData experiment
             subject <- getExperimentScienceSubject experiment
             subjectTitle <- getScienceSubjectTitle subject
             isComplete <- getScienceSubjectIsComplete subject
-            runCount <- fromMaybe 0 . M.lookup subjectTitle . experimentsRun <$> liftIO (readIORef dataRef)
+            runCount <- fromMaybe 0 . M.lookup subjectTitle . experimentsRun
+                <$> liftIO (readIORef dataRef)
             when (isAvailable && not hasData && not isComplete && runCount < 3) $ do
-                logMessage $ "Collecting Science: " <> subjectTitle
+                logMessage $ "Collecting Science: " <> subjectTitle <> "."
                 experimentRun experiment
                 liftIO . modifyIORef dataRef $ \sd -> sd
                     { experimentsRun =
@@ -174,13 +169,11 @@ subOrbital logMessage streamClient = do
                             ) subjectTitle $ experimentsRun sd
                     }
                 liftIO $ threadDelay 1000000
-        (< 0) . sodVerticalVelocity <$> liftIO (readIORef dataRef)
 
-    -- TODO: Warp til apoapsis
-    -- TODO: Align Retrograde
     -- TODO: Warp to ~40km
+    -- TODO: Align Retrograde
     -- TODO: Stage Until Parachutes are Deployed
-    logMessage "Activating Parachutes"
+    logMessage "Activating Parachutes."
     loop $ do
         parachutes <- getVesselParts v >>= getPartsParachutes
         parachutesDeployed <- and <$> mapM getParachuteDeployed parachutes
@@ -188,8 +181,18 @@ subOrbital logMessage streamClient = do
             . void $ controlActivateNextStage ctrl
         return parachutesDeployed
     -- TODO: Warp to 1 second before touchdown.
+    where
+        isFalling velocityStream dataRef msg _ = do
+            when (messageHasResultFor velocityStream msg) $ do
+                verticalVelocity <- getStreamResult velocityStream msg
+                liftIO . modifyIORef dataRef
+                    $ \c -> c { sodVerticalVelocity = verticalVelocity }
+            (< 0) . sodVerticalVelocity <$> liftIO (readIORef dataRef)
 
 
+
+
+-- Execute Maneuver
 
 -- | A Program for executing a maneuver node. A basic wrapper around the
 -- `executeManeuver` sub-routine.
@@ -222,7 +225,7 @@ executeManeuver logMessage streamClient v node = do
     let m1 = m0 / exp (deltaV / isp)
         flowRate = maxThrust / isp
         burnTime = (m0 - m1) / flowRate
-    logMessage . T.pack $ "Calculated Burn Time of " ++ show (round burnTime :: Integer) ++ "s"
+    logMessage . T.pack $ "Calculated Burn Time of " ++ show (round burnTime :: Integer) ++ "s."
 
     logMessage "Warping to Approximate Burn Time."
     nodeUT <- getNodeUT node
@@ -268,6 +271,8 @@ executeManeuver logMessage streamClient v node = do
 
 
 
+-- Low Kerbin Orbit
+
 -- | An automated routine for taking off & attempting to achieve
 -- a circular Low Kerbin Orbit(75,000m).
 --
@@ -295,9 +300,7 @@ lowKerbinOrbit logMessage streamClient = do
 -- | Used to store the last data received from `liftOff`'s RPC streams.
 data LiftOffData
     = LiftOffData
-        { lodVelocity :: Double -- ^ Vessel's Surface Velocity
-        , lodAltitude :: Double -- ^ Flight's Mean Altitude
-        , lodApoapsis :: Double -- ^ Orbit's Apoapsis Altitude
+        { lodAltitude :: Double -- ^ Flight's Mean Altitude
         , lodThrust :: Float    -- ^ Vessel's Current Thrust
         }
 
@@ -307,49 +310,18 @@ liftOff logMessage streamClient v = do
     logMessage "Initializing Lift-Off Data & Telemetry Streams."
     pilot <- getVesselAutoPilot v
     ctrl <- getVesselControl v
-    body <- getVesselOrbit v >>= getOrbitBody
-    surfaceReferenceFrame <- getCelestialBodyReferenceFrame body
-    flight <- vesselFlight v surfaceReferenceFrame
 
-    dataRef <- liftIO . newIORef $ LiftOffData 0 0 0 0
-    altitudeStream <- getFlightMeanAltitudeStream flight
-    velocityStream <- vesselVelocityStream v surfaceReferenceFrame
+    dataRef <- liftIO . newIORef $ LiftOffData 0 0
     thrustStream <- getVesselThrustStream v
-    apoapsisStream <- getVesselOrbit v >>= getOrbitApoapsisAltitudeStream
 
     launch logMessage v (90, 90, 90)
 
     logMessage "Raising Apoapsis to 75km."
-    loop $ do
-        -- TODO: Use StateT instead of IORef
-        let update = liftIO . modifyIORef dataRef
-        -- Update the Data Using Message Streams
+    withPitchTable streamClient launchpadPitchAngles v reachedApoapsis $ do
         msg <- getStreamMessage streamClient
-        when (messageHasResultFor altitudeStream msg) $ do
-            altitude <- getStreamResult altitudeStream msg
-            update $ \c -> c { lodAltitude = altitude }
-        when (messageHasResultFor velocityStream msg) $ do
-            velocity <- mag <$> getStreamResult velocityStream msg
-            update $ \c -> c { lodVelocity = velocity }
         when (messageHasResultFor thrustStream msg) $ do
             thrust <- getStreamResult thrustStream msg
-            update $ \c -> c { lodThrust = thrust }
-        when (messageHasResultFor apoapsisStream msg) $ do
-            apoapsis <- getStreamResult apoapsisStream msg
-            update $ \c -> c { lodApoapsis = apoapsis }
-
-        -- Control Pitch Angle
-        liftIO (readIORef dataRef) >>= updatePitch pilot
-
-        -- Decouple SRBs when Empty
-        currentStage <- getControlCurrentStage ctrl
-        resources <- vesselResourcesInDecoupleStage v currentStage False
-        solidFuel <- resourcesAmount resources "SolidFuel"
-        liquidFuel <- resourcesAmount resources "LiquidFuel"
-        when (solidFuel == 0 && liquidFuel == 0) . void
-            $ logMessage "Resources Empty, Decoupling Stage."
-            >> controlActivateNextStage ctrl
-
+            liftIO . modifyIORef dataRef $ \c -> c { lodThrust = thrust }
         -- Adjust Throttle to Maintain 2.5 TWR
         thrust <- liftIO $ lodThrust <$> readIORef dataRef
         weight <- lodAltitude <$> liftIO (readIORef dataRef) >>= weightAtAltitude v
@@ -363,30 +335,12 @@ liftOff logMessage streamClient v = do
             getControlThrottle ctrl
             >>= (\t -> setControlThrottle ctrl . min 0 $ t - 0.0005)
 
-        -- Stop at Apoapsis of 75km
-        (> 75000) . lodApoapsis <$> liftIO (readIORef dataRef)
-
     logMessage "Desired Apoapsis Altitude Achieved, Disabling Throttle."
     setControlThrottle ctrl 0
     autoPilotDisengage pilot
     where
-        -- TODO: Smooth out pitch changes, PID Controller?
-        updatePitch pilot data_ =
-            let
-                angles =
-                    [ ( ( 0, 0 ), 90 )
-                    , ( ( 100, 6500 ), 80 )
-                    , ( ( 250, 10000 ), 65 )
-                    , ( ( 450, 15000 ), 55 )
-                    , ( ( 500, 30000 ), 45 )
-                    , ( ( 600, 45000 ), 20 )
-                    , ( ( 700, 60000 ), 10 )
-                    , ( ( 800, 70000 ), 0 )
-                    ]
-                velocity = lodVelocity data_
-                apoapsis = lodApoapsis data_
-            in
-                loopMatch angles (\(v', a) -> v' < velocity && a >= apoapsis) (setAutoPilotTargetPitch pilot)
+        reachedApoapsis _ data_ =
+            return . (> 75000) $ ptdApoapsis data_
 
 
 -- | Circularize the current orbit at it's apoapsis.
@@ -414,6 +368,90 @@ circularizeOrbit logMessage streamClient v = do
 
     logMessage "Removing Circularization Maneuver Node."
     nodeRemove node
+
+
+
+-- Pitch Tables
+
+type PitchTable
+    = [ ( ( Velocity, Apoapsis ), Pitch ) ]
+
+type Velocity
+    = Double
+type Apoapsis
+    = Double
+type Pitch
+    = Float
+
+launchpadPitchAngles :: PitchTable
+launchpadPitchAngles =
+            [ ( ( 0, 0 ), 90 )
+            , ( ( 100, 6500 ), 80 )
+            , ( ( 250, 10000 ), 65 )
+            , ( ( 450, 15000 ), 55 )
+            , ( ( 500, 30000 ), 45 )
+            , ( ( 600, 45000 ), 20 )
+            , ( ( 700, 60000 ), 10 )
+            , ( ( 800, 70000 ), 0 )
+            ]
+
+
+data PitchTableData
+    = PitchTableData
+        { ptdVelocity :: Double
+        , ptdAltitude :: Double
+        , ptdApoapsis :: Double
+        }
+
+-- | Apply a Pitch Table to the Current Vessel, Run Some Action, & Abort
+-- When Some Condition is Satisfied.
+--
+-- TODO: Smooth out pitch changes, PID Controller?
+withPitchTable :: StreamClient -> PitchTable -> Vessel -> (KRPCStreamMsg -> PitchTableData -> RPCContext Bool) -> RPCContext () -> RPCContext ()
+withPitchTable streamClient angles v shouldStop action = do
+    pilot <- getVesselAutoPilot v
+    surfaceReferenceFrame <- getVesselOrbit v
+        >>= getOrbitBody
+        >>= getCelestialBodyReferenceFrame
+    flight <- vesselFlight v surfaceReferenceFrame
+
+    dataRef <- liftIO . newIORef $ PitchTableData 0 0 0
+
+    altitudeStream <- getFlightMeanAltitudeStream flight
+    velocityStream <- vesselVelocityStream v surfaceReferenceFrame
+    apoapsisStream <- getVesselOrbit v >>= getOrbitApoapsisAltitudeStream
+    loop $ do
+        -- TODO: Use StateT instead of IORef?
+        let update = liftIO . modifyIORef dataRef
+        -- Update the Data Using Message Streams
+        msg <- getStreamMessage streamClient
+        when (messageHasResultFor altitudeStream msg) $ do
+            altitude <- getStreamResult altitudeStream msg
+            update $ \c -> c { ptdAltitude = altitude }
+        when (messageHasResultFor velocityStream msg) $ do
+            velocity <- mag <$> getStreamResult velocityStream msg
+            update $ \c -> c { ptdVelocity = velocity }
+        when (messageHasResultFor apoapsisStream msg) $ do
+            apoapsis <- getStreamResult apoapsisStream msg
+            update $ \c -> c { ptdApoapsis = apoapsis }
+
+        liftIO (readIORef dataRef) >>= updatePitch pilot
+
+        action
+
+        shouldStop msg =<< liftIO (readIORef dataRef)
+    where
+        updatePitch :: AutoPilot -> PitchTableData -> RPCContext ()
+        updatePitch pilot data_ =
+            let
+                velocity =
+                    ptdVelocity data_
+                apoapsis =
+                    ptdApoapsis data_
+            in
+                loopMatch angles (\(v', a) -> v' < velocity && a >= apoapsis)
+                    (setAutoPilotTargetPitch pilot)
+
 
 
 -- UTILTIES
