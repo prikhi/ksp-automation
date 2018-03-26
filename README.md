@@ -4,8 +4,11 @@
 
 A CLI KSP Automation program & library that utilizes the [kRPC][krpc] mod.
 
-Currently in early alpha - the only current supported program is achieving
-Low-Kerbin Orbit from the Kerbal Space Center Launchpad.
+Currently in early alpha, there's only a few programs:
+
+* Executing an Existing Maneuver Node
+* Sub-Orbital Launch with Science Collection
+* Achieving Low-Kerbin Orbit from the Kerbal Space Center Launchpad
 
 ![The User Interface of the KSP Automation Program, Showing a Mission List, Parameters, Logs, and Options](http://bugs.sleepanarchy.com/projects/ksp-automation/repository/revisions/master/entry/screenshot.png "KSP Automation Screenshot")
 
@@ -14,7 +17,7 @@ Low-Kerbin Orbit from the Kerbal Space Center Launchpad.
 
 The future will include launch/abort buttons, more missions, tweakable
 parameters for missions, global automation(like automatically staging whenever
-fuel in stage is depleted).
+fuel in stage is depleted, collecting science when possible).
 
 Eventually this could be expanded into a "Mission Builder" where you can select
 a vessel & tweak/assemble a list of tasks into larger missions. Something that

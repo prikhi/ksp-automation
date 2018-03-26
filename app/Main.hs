@@ -117,10 +117,11 @@ instance Show AppSection where
 
 -- | The mission programs available.
 data Mission
-    = LowKerbinOrbit
+    = ExecuteManeuver
+    | SubOrbital
+    | LowKerbinOrbit
     | LiftOff
     | Circularize
-    | ExecuteManeuver
     deriving (Enum, Bounded)
 
 instance Show Mission where
@@ -133,6 +134,8 @@ instance Show Mission where
             "Circularize Orbit at Apoapsis"
         ExecuteManeuver ->
             "Execute Planned Maneuver"
+        SubOrbital ->
+            "Sub-Orbital Launch"
 
 
 data LogEntry
@@ -420,6 +423,8 @@ runMission logMVar m =
                     lowKerbinOrbit
                 ExecuteManeuver ->
                     executeManeuverProgram
+                SubOrbital ->
+                    subOrbital
                 _ ->
                     fail "runMission: UNIMPLEMENTED MISSION"
 
@@ -428,6 +433,8 @@ runMission logMVar m =
                 "Low Kerbin Orbit"
             ExecuteManeuver ->
                 "Maneuver Execution"
+            SubOrbital ->
+                "Sub-Orbital Launch"
             _ ->
                 fail "runMission: UNIMPLEMENTED MISSION"
         run =

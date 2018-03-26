@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-| Utilities for automating Kerbal Space Program using the kRPC mod.
 
@@ -24,10 +25,13 @@ import Control.Concurrent (threadDelay)
 import Control.Monad (forM_, when, void)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (newIORef, modifyIORef, readIORef)
+import Data.Maybe (listToMaybe, fromMaybe)
+import Data.Monoid ((<>))
 
 import KRPCHS
 import KRPCHS.SpaceCenter
 
+import qualified Data.Map as M
 import qualified Data.Text as T
 
 
@@ -40,14 +44,64 @@ logStdOut =
     liftIO . putStrLn . T.unpack
 
 
--- | Used to store the last data received from `liftOff`'s RPC streams.
-data LiftOffData
-    = LiftOffData
-        { lodVelocity :: Double -- ^ Vessel's Surface Velocity
-        , lodAltitude :: Double -- ^ Flight's Mean Altitude
-        , lodApoapsis :: Double -- ^ Orbit's Apoapsis Altitude
-        , lodThrust :: Float    -- ^ Vessel's Current Thrust
+-- Sub-Orbital
+
+data SubOrbitalData
+    = SubOrbitalData
+        { sodVerticalVelocity :: Double
+        , experimentsRun :: M.Map T.Text Integer    -- ^ Subject Title --> Run Count
         }
+
+subOrbital :: LoggingFunction -> StreamClient -> RPCContext ()
+subOrbital logMessage streamClient = do
+    v <- initializeVesselData logMessage
+    ctrl <- getVesselControl v
+    experiments <- getVesselParts v >>= getPartsExperiments
+
+    surfaceReferenceFrame <- getVesselOrbit v
+        >>= getOrbitBody
+        >>= getCelestialBodyReferenceFrame
+
+    dataRef <- liftIO . newIORef $ SubOrbitalData 9001 M.empty
+    velocityStream <- vesselVelocityStream v surfaceReferenceFrame
+
+    launch logMessage v (90, 90, 80)
+
+    logMessage "Waiting for Parachute Activation"
+    loop $ do
+        let update = liftIO . modifyIORef dataRef
+        msg <- getStreamMessage streamClient
+        when (messageHasResultFor velocityStream msg) $ do
+            (verticalV, _, _) <- getStreamResult velocityStream msg
+            update $ \c -> c { sodVerticalVelocity = verticalV }
+        forM_ experiments $ \experiment -> do
+            isAvailable <- getExperimentAvailable experiment
+            hasData <- getExperimentHasData experiment
+            subject <- getExperimentScienceSubject experiment
+            subjectTitle <- getScienceSubjectTitle subject
+            isComplete <- getScienceSubjectIsComplete subject
+            runCount <- fromMaybe 0 . M.lookup subjectTitle . experimentsRun <$> liftIO (readIORef dataRef)
+            when (isAvailable && not hasData && not isComplete && runCount < 3) $ do
+                logMessage $ "Collecting Science: " <> subjectTitle
+                experimentRun experiment
+                liftIO . modifyIORef dataRef $ \sd -> sd
+                    { experimentsRun =
+                        M.alter
+                            (\case
+                                Nothing ->
+                                    Just 1
+                                Just a ->
+                                    Just $ a + 1
+                            ) subjectTitle $ experimentsRun sd
+                    }
+                liftIO $ threadDelay 1000000
+        (< 0) . sodVerticalVelocity <$> liftIO (readIORef dataRef)
+
+    logMessage "Activating Parachutes"
+    void $ controlActivateNextStage ctrl
+    -- TODO: Warp to 1 or 2 seconds before touchdown.
+
+
 
 -- | A Program for executing a maneuver node. A basic wrapper around the
 -- `executeManeuver` sub-routine.
@@ -149,6 +203,15 @@ lowKerbinOrbit logMessage streamClient = do
     enableStabilityAssist ctrl
     logMessage "Low Kerbin Orbit Achieved."
 
+
+-- | Used to store the last data received from `liftOff`'s RPC streams.
+data LiftOffData
+    = LiftOffData
+        { lodVelocity :: Double -- ^ Vessel's Surface Velocity
+        , lodAltitude :: Double -- ^ Flight's Mean Altitude
+        , lodApoapsis :: Double -- ^ Orbit's Apoapsis Altitude
+        , lodThrust :: Float    -- ^ Vessel's Current Thrust
+        }
 
 -- | Lift-off from the KSC Launchpad & attain an apoapsis of 75km.
 liftOff :: LoggingFunction -> StreamClient -> Vessel -> RPCContext ()
