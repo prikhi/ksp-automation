@@ -239,7 +239,8 @@ liftOff logMessage streamClient v = do
                     , ( ( 450, 15000 ), 55 )
                     , ( ( 500, 30000 ), 45 )
                     , ( ( 600, 45000 ), 20 )
-                    , ( ( 800, 65000 ), 0 )
+                    , ( ( 700, 60000 ), 10 )
+                    , ( ( 800, 70000 ), 0 )
                     ]
                 velocity = lodVelocity data_
                 apoapsis = lodApoapsis data_
