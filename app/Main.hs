@@ -354,13 +354,14 @@ handleEvents s = \case
             $ \entries -> return ([], reverse entries)
         continue s
             { asMissionLog =
-                foldl (flip $ L.listInsert maxBound) (asMissionLog s) newLogEntries
+                foldl (\ml le -> L.listMoveDown $ L.listInsert maxBound le ml)
+                    (asMissionLog s)
+                    newLogEntries
             }
 
     VtyEvent ev -> do
         let focusedSection =
                 asFocusedSection s
-        -- TODO: Handle Log Scrolling
         updatedState <-
             case focusedSection of
                 MissionSelect ->
@@ -371,6 +372,7 @@ handleEvents s = \case
                         <$> L.handleListEventVi L.handleListEvent ev (asMissionLog s)
                 _ ->
                     return s
+
         -- TODO: Split each section's keybindings into separate function
         case ev of
             -- Launch Mission
