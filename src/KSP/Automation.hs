@@ -145,6 +145,7 @@ subOrbital logMessage streamClient = do
 
     launch logMessage v (90, 90, 80)
 
+    -- TODO: Adjust Pitch During Thrust
     logMessage "Waiting for Parachute Activation"
     loop $ do
         let update = liftIO . modifyIORef dataRef
@@ -175,9 +176,18 @@ subOrbital logMessage streamClient = do
                 liftIO $ threadDelay 1000000
         (< 0) . sodVerticalVelocity <$> liftIO (readIORef dataRef)
 
+    -- TODO: Warp til apoapsis
+    -- TODO: Align Retrograde
+    -- TODO: Warp to ~40km
+    -- TODO: Stage Until Parachutes are Deployed
     logMessage "Activating Parachutes"
-    void $ controlActivateNextStage ctrl
-    -- TODO: Warp to 1 or 2 seconds before touchdown.
+    loop $ do
+        parachutes <- getVesselParts v >>= getPartsParachutes
+        parachutesDeployed <- and <$> mapM getParachuteDeployed parachutes
+        unless parachutesDeployed
+            . void $ controlActivateNextStage ctrl
+        return parachutesDeployed
+    -- TODO: Warp to 1 second before touchdown.
 
 
 
